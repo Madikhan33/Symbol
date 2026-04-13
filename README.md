@@ -285,6 +285,29 @@ Examples of problems it catches:
 
 ---
 
+## Agent Prompts
+
+This repository includes project prompts in formats that are practical to use directly:
+
+- Codex skill: [codex/skills/symbol-memory/SKILL.md](codex/skills/symbol-memory/SKILL.md)
+- Claude project file: [CLAUDE.md](CLAUDE.md)
+
+They are intentionally short. They tell the agent to:
+
+- build or validate before relying on symbol memory
+- use `find`, `relations`, and `open` before broad grep
+- treat `.symbol_memory/` as generated output
+- respect the manual relation model from `r=[...]`
+
+### How to use them
+
+- Codex:
+  Copy the `codex/skills/symbol-memory/` folder into your Codex skills directory or install it as a local skill.
+- Claude:
+  Copy `CLAUDE.md` into the root of the target repository so Claude can pick it up as a project instruction file.
+
+---
+
 ## Design Principles
 
 - Never infer semantic meaning from code automatically.
@@ -336,6 +359,11 @@ Repository layout:
 
 ```text
 assets/
+codex/
+  skills/
+    symbol-memory/
+      SKILL.md
+CLAUDE.md
 src/
   symbol_memory/
 tests/
