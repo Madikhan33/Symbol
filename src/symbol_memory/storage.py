@@ -75,11 +75,11 @@ def render_symbol_card(symbol: "SymbolRecord", relations: list[RelationPreview])
         for relation in relations:
             if relation.resolved:
                 lines.append(
-                    f"- {relation.id} — {relation.name} — "
+                    f"- {relation.id} - {relation.name} - "
                     f"{relation.file_path}:{relation.start_line}-{relation.end_line}"
                 )
             else:
-                lines.append(f"- {relation.id} — unresolved")
+                lines.append(f"- {relation.id} - unresolved")
     else:
         lines.append("- none")
 
@@ -139,7 +139,7 @@ def render_project_map(index: ProjectIndex) -> str:
     if top_level:
         for symbol in sorted(top_level, key=lambda item: item.id):
             lines.append(
-                f"- {symbol.id} — {symbol.name} — {symbol.file_path}:{symbol.start_line}-{symbol.end_line}"
+                f"- {symbol.id} - {symbol.name} - {symbol.file_path}:{symbol.start_line}-{symbol.end_line}"
             )
     else:
         lines.append("- none")
@@ -200,10 +200,11 @@ def compare_artifacts(
 
     if not output_dir.exists():
         return [
-            ValidationIssue(
+            _artifact_issue(
                 code="missing_output_dir",
-                severity="error",
                 message=f"Output directory does not exist: {output_dir}",
+                file_path=str(output_dir),
+                hint="Run 'symbol-memory build' to generate the artifact directory.",
             )
         ]
 
@@ -214,10 +215,11 @@ def compare_artifacts(
     ]
     for path in missing_paths:
         issues.append(
-            ValidationIssue(
+            _artifact_issue(
                 code="missing_artifact",
-                severity="error",
                 message=f"Missing artifact: {path.name}",
+                file_path=path.name,
+                hint="Run 'symbol-memory build' to regenerate missing artifacts.",
             )
         )
     if missing_paths:
@@ -227,10 +229,11 @@ def compare_artifacts(
         actual_index = load_index(output_dir)
     except Exception as error:  # noqa: BLE001
         issues.append(
-            ValidationIssue(
+            _artifact_issue(
                 code="invalid_index_json",
-                severity="error",
                 message=f"Could not load index.json: {error}",
+                file_path=index_path.name,
+                hint="Rebuild symbol memory to regenerate index.json.",
             )
         )
         return issues
@@ -239,10 +242,11 @@ def compare_artifacts(
         actual_relations = load_relations(output_dir)
     except Exception as error:  # noqa: BLE001
         issues.append(
-            ValidationIssue(
+            _artifact_issue(
                 code="invalid_relations_json",
-                severity="error",
                 message=f"Could not load relations.json: {error}",
+                file_path=relations_path.name,
+                hint="Rebuild symbol memory to regenerate relations.json.",
             )
         )
         actual_relations = {}
@@ -251,20 +255,22 @@ def compare_artifacts(
     expected_ids = set(expected_index.symbols_by_id)
     for missing_id in sorted(expected_ids - actual_ids):
         issues.append(
-            ValidationIssue(
+            _artifact_issue(
                 code="missing_symbol_in_index",
-                severity="error",
                 message=f"Symbol {missing_id} is missing from index.json",
                 symbol_id=missing_id,
+                file_path=index_path.name,
+                hint="Run 'symbol-memory build' to regenerate index.json from source.",
             )
         )
     for extra_id in sorted(actual_ids - expected_ids):
         issues.append(
-            ValidationIssue(
+            _artifact_issue(
                 code="unexpected_symbol_in_index",
-                severity="error",
                 message=f"Unexpected symbol {extra_id} found in index.json",
                 symbol_id=extra_id,
+                file_path=index_path.name,
+                hint="Rebuild artifacts so index.json matches the current source tree.",
             )
         )
 
@@ -276,9 +282,8 @@ def compare_artifacts(
             or actual_symbol.end_line != expected_symbol.end_line
         ):
             issues.append(
-                ValidationIssue(
+                _artifact_issue(
                     code="symbol_moved",
-                    severity="error",
                     message=(
                         f"Symbol {symbol_id} moved from lines "
                         f"{actual_symbol.start_line}-{actual_symbol.end_line} to "
@@ -286,63 +291,71 @@ def compare_artifacts(
                     ),
                     symbol_id=symbol_id,
                     file_path=expected_symbol.file_path,
+                    line=expected_symbol.start_line,
+                    hint="Run 'symbol-memory build' after moving annotated code.",
                 )
             )
             continue
         if actual_symbol != expected_symbol:
             issues.append(
-                ValidationIssue(
+                _artifact_issue(
                     code="symbol_index_mismatch",
-                    severity="error",
                     message=f"Symbol {symbol_id} does not match current source metadata",
                     symbol_id=symbol_id,
                     file_path=expected_symbol.file_path,
+                    line=expected_symbol.start_line,
+                    hint="Rebuild artifacts so index.json matches the current source metadata.",
                 )
             )
 
     if actual_index.counts != expected_index.counts:
         issues.append(
-            ValidationIssue(
+            _artifact_issue(
                 code="index_count_mismatch",
-                severity="error",
                 message="Index counts do not match current source scan",
+                file_path=index_path.name,
+                hint="Rebuild artifacts so project counts match the current source tree.",
             )
         )
 
     if actual_index.name_lookup != expected_index.name_lookup:
         issues.append(
-            ValidationIssue(
+            _artifact_issue(
                 code="name_lookup_mismatch",
-                severity="error",
                 message="index.json name_lookup does not match current source scan",
+                file_path=index_path.name,
+                hint="Rebuild artifacts so lookups match the current source tree.",
             )
         )
 
     if actual_index.qualified_name_lookup != expected_index.qualified_name_lookup:
         issues.append(
-            ValidationIssue(
+            _artifact_issue(
                 code="qualified_name_lookup_mismatch",
-                severity="error",
                 message="index.json qualified_name_lookup does not match current source scan",
+                file_path=index_path.name,
+                hint="Rebuild artifacts so lookups match the current source tree.",
             )
         )
 
     if actual_relations != expected_relations:
         issues.append(
-            ValidationIssue(
+            _artifact_issue(
                 code="relations_mismatch",
-                severity="error",
                 message="relations.json does not match current source scan",
+                file_path=relations_path.name,
+                hint="Rebuild artifacts so relations.json matches the current source tree.",
             )
         )
 
     actual_project_map = project_map_path.read_text(encoding="utf-8")
     if actual_project_map != expected_project_map:
         issues.append(
-            ValidationIssue(
+            _artifact_issue(
                 code="project_map_mismatch",
-                severity="error",
                 message="project_map.md does not match current source scan",
+                file_path=project_map_path.name,
+                hint="Rebuild artifacts to refresh project_map.md.",
             )
         )
 
@@ -350,26 +363,49 @@ def compare_artifacts(
         card_path = symbols_dir / f"{symbol_id}.md"
         if not card_path.exists():
             issues.append(
-                ValidationIssue(
+                _artifact_issue(
                     code="missing_symbol_card",
-                    severity="error",
                     message=f"Missing symbol card for {symbol_id}",
                     symbol_id=symbol_id,
+                    file_path=card_path.name,
+                    hint="Run 'symbol-memory build' to regenerate symbol cards.",
                 )
             )
             continue
         actual_card = card_path.read_text(encoding="utf-8")
         if actual_card != expected_card:
             issues.append(
-                ValidationIssue(
+                _artifact_issue(
                     code="symbol_card_mismatch",
-                    severity="error",
                     message=f"Markdown card for symbol {symbol_id} does not match index data",
                     symbol_id=symbol_id,
+                    file_path=card_path.name,
+                    hint="Rebuild artifacts so symbol cards match the current index.",
                 )
             )
 
     return issues
+
+
+def _artifact_issue(
+    *,
+    code: str,
+    message: str,
+    symbol_id: int | None = None,
+    file_path: str | None = None,
+    line: int | None = None,
+    hint: str | None = None,
+) -> ValidationIssue:
+    return ValidationIssue(
+        stage="artifact",
+        code=code,
+        severity="error",
+        message=message,
+        symbol_id=symbol_id,
+        file_path=file_path,
+        line=line,
+        hint=hint,
+    )
 
 
 def _write_json(path: Path, payload: object) -> None:

@@ -36,11 +36,15 @@ def build_relation_map(
                 message = f"Relation id {relation_id} referenced by symbol {symbol.id} does not exist"
                 issues.append(
                     ValidationIssue(
+                        stage="resolve",
                         code="missing_relation_id",
                         severity="error",
                         message=message,
                         symbol_id=symbol.id,
                         file_path=symbol.file_path,
+                        line=symbol.start_line,
+                        field="r",
+                        hint=f"Remove {relation_id} from r or add a symbol with id {relation_id}.",
                     )
                 )
                 previews.append(

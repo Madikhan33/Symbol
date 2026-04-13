@@ -154,6 +154,8 @@ class SymbolMemory:
         project_root = self._require_project_root()
         file_path = Path(path)
         resolved_path = file_path if file_path.is_absolute() else project_root / file_path
+        if not resolved_path.exists():
+            raise FileNotFoundError(f"Source file does not exist: {resolved_path}")
         lines = resolved_path.read_text(encoding="utf-8").splitlines()
         selected = lines[start - 1 : end]
         return "\n".join(selected)
@@ -171,16 +173,20 @@ class SymbolMemory:
             if not file_path.exists():
                 issues.append(
                     ValidationIssue(
+                        stage="resolve",
                         code="missing_symbol_file",
                         severity="error",
                         message=f"Resolved file path does not exist for symbol {symbol.id}: {symbol.file_path}",
                         symbol_id=symbol.id,
                         file_path=symbol.file_path,
+                        line=symbol.start_line,
+                        hint="Move the symbol back or update the build inputs before rebuilding.",
                     )
                 )
             if symbol.start_line > symbol.end_line:
                 issues.append(
                     ValidationIssue(
+                        stage="resolve",
                         code="invalid_symbol_line_range",
                         severity="error",
                         message=(
@@ -189,6 +195,8 @@ class SymbolMemory:
                         ),
                         symbol_id=symbol.id,
                         file_path=symbol.file_path,
+                        line=symbol.start_line,
+                        hint="Rebuild after fixing the recorded symbol boundaries.",
                     )
                 )
 
@@ -210,12 +218,24 @@ class SymbolMemory:
 
     def _load_index(self) -> ProjectIndex:
         if self._index_cache is None:
-            self._index_cache = load_index(self._require_output_dir())
+            output_dir = self._require_output_dir()
+            index_path = output_dir / "index.json"
+            if not index_path.exists():
+                raise FileNotFoundError(
+                    f"Missing symbol memory index at {index_path}. Run 'symbol-memory build' first."
+                )
+            self._index_cache = load_index(output_dir)
         return self._index_cache
 
     def _load_relations(self) -> dict[int, list[RelationPreview]]:
         if self._relations_cache is None:
-            self._relations_cache = load_relations(self._require_output_dir())
+            output_dir = self._require_output_dir()
+            relations_path = output_dir / "relations.json"
+            if not relations_path.exists():
+                raise FileNotFoundError(
+                    f"Missing relation index at {relations_path}. Run 'symbol-memory build' first."
+                )
+            self._relations_cache = load_relations(output_dir)
         return self._relations_cache
 
     def _set_paths(

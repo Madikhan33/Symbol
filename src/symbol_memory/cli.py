@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
+
+from pydantic import ValidationError
 
 from symbol_memory.models import RelationPreview, SymbolRecord, ValidationReport
 from symbol_memory.query import SymbolMemory
@@ -76,22 +79,26 @@ def _dispatch_args(args: argparse.Namespace) -> int:
         return 1 if report.status == "error" else 0
 
     memory = SymbolMemory(project_root=args.project_root, output_dir=args.output)
-    if args.command == "find":
-        result = memory.find(args.query)
-        print(_format_find_result(result))
-        return 0
-    if args.command == "show":
-        print(memory.get_symbol_card(args.symbol_id))
-        return 0
-    if args.command == "relations":
-        print(_format_relations(memory.show_relations(args.symbol_id)))
-        return 0
-    if args.command == "open":
-        print(memory.open_symbol(args.symbol_id))
-        return 0
-    if args.command == "list":
-        print(_format_symbol_list(memory.list_symbols()))
-        return 0
+    try:
+        if args.command == "find":
+            result = memory.find(args.query)
+            print(_format_find_result(result))
+            return 0
+        if args.command == "show":
+            print(memory.get_symbol_card(args.symbol_id))
+            return 0
+        if args.command == "relations":
+            print(_format_relations(memory.show_relations(args.symbol_id)))
+            return 0
+        if args.command == "open":
+            print(memory.open_symbol(args.symbol_id))
+            return 0
+        if args.command == "list":
+            print(_format_symbol_list(memory.list_symbols()))
+            return 0
+    except (FileNotFoundError, KeyError, OSError, UnicodeDecodeError, ValidationError, ValueError) as error:
+        print(_format_cli_error(error), file=sys.stderr)
+        return 1
     raise ValueError(f"Unknown command {args.command}")
 
 
@@ -115,30 +122,30 @@ def _run_typer(argv: list[str] | None = None) -> int:
     @app.command("find")
     def find_command(query: str, output: str | None = None, project_root: str = ".") -> None:
         memory = SymbolMemory(project_root=project_root, output_dir=output)
-        print(_format_find_result(memory.find(query)))
+        _print_or_exit(lambda: _format_find_result(memory.find(query)))
 
     @app.command("show")
     def show_command(symbol_id: int, output: str | None = None, project_root: str = ".") -> None:
         memory = SymbolMemory(project_root=project_root, output_dir=output)
-        print(memory.get_symbol_card(symbol_id))
+        _print_or_exit(lambda: memory.get_symbol_card(symbol_id))
 
     @app.command("relations")
     def relations_command(symbol_id: int, output: str | None = None, project_root: str = ".") -> None:
         memory = SymbolMemory(project_root=project_root, output_dir=output)
-        print(_format_relations(memory.show_relations(symbol_id)))
+        _print_or_exit(lambda: _format_relations(memory.show_relations(symbol_id)))
 
     @app.command("open")
     def open_command(symbol_id: int, output: str | None = None, project_root: str = ".") -> None:
         memory = SymbolMemory(project_root=project_root, output_dir=output)
-        print(memory.open_symbol(symbol_id))
+        _print_or_exit(lambda: memory.open_symbol(symbol_id))
 
     @app.command("list")
     def list_command(output: str | None = None, project_root: str = ".") -> None:
         memory = SymbolMemory(project_root=project_root, output_dir=output)
-        print(_format_symbol_list(memory.list_symbols()))
+        _print_or_exit(lambda: _format_symbol_list(memory.list_symbols()))
 
     try:
-        app(args=argv or [], standalone_mode=False)
+        app(args=argv, standalone_mode=False)
     except SystemExit as error:  # pragma: no cover - Typer controls exit flow
         return int(error.code)
     except Exception as error:  # pragma: no cover - defensive fallback
@@ -155,7 +162,19 @@ def _format_report(report: ValidationReport) -> str:
         f"warnings: {report.warning_count}",
     ]
     for issue in report.issues:
-        lines.append(f"{issue.severity}: {issue.message}")
+        location = ""
+        if issue.file_path:
+            location = issue.file_path
+            if issue.line is not None:
+                location = f"{location}:{issue.line}"
+        prefix = f"{issue.severity} {issue.code}"
+        if issue.stage:
+            prefix = f"{prefix} [{issue.stage}]"
+        if location:
+            prefix = f"{prefix} {location}"
+        lines.append(f"{prefix} {issue.message}")
+        if issue.hint:
+            lines.append(f"hint: {issue.hint}")
     return "\n".join(lines)
 
 
@@ -188,6 +207,19 @@ def _format_symbol_list(symbols: list[SymbolRecord]) -> str:
     for symbol in symbols:
         lines.append(f"{symbol.id} {symbol.symbol_type} {symbol.qualified_name}")
     return "\n".join(lines)
+
+
+def _print_or_exit(render) -> None:
+    try:
+        print(render())
+    except (FileNotFoundError, KeyError, OSError, UnicodeDecodeError, ValidationError, ValueError) as error:
+        print(_format_cli_error(error), file=sys.stderr)
+        raise typer.Exit(code=1) from error
+
+
+def _format_cli_error(error: Exception) -> str:
+    message = error.args[0] if getattr(error, "args", None) else str(error)
+    return f"error: {message}"
 
 
 if __name__ == "__main__":

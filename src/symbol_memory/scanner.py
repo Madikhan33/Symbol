@@ -6,6 +6,8 @@ import ast
 from collections.abc import Iterable
 from pathlib import Path
 
+from pydantic import ValidationError
+
 from symbol_memory.models import SymbolDecoratorMetadata, SymbolRecord, ValidationIssue
 
 IGNORED_DIR_NAMES = {
@@ -33,11 +35,13 @@ def scan_project(project_root: Path) -> tuple[list[SymbolRecord], list[Validatio
             source = file_path.read_text(encoding="utf-8")
         except UnicodeDecodeError:
             issues.append(
-                ValidationIssue(
+                _issue(
+                    stage="scan",
                     code="file_decode_error",
                     severity="error",
-                    message=f"Could not decode Python file {rel_path} as UTF-8",
+                    message=f"Could not decode Python file '{rel_path}' as UTF-8.",
                     file_path=rel_path,
+                    hint="Re-save the file as UTF-8 before rebuilding symbol memory.",
                 )
             )
             continue
@@ -46,11 +50,15 @@ def scan_project(project_root: Path) -> tuple[list[SymbolRecord], list[Validatio
             tree = ast.parse(source, filename=str(file_path))
         except SyntaxError as error:
             issues.append(
-                ValidationIssue(
+                _issue(
+                    stage="scan",
                     code="syntax_error",
                     severity="error",
-                    message=f"Syntax error in {rel_path}: {error.msg} at line {error.lineno}",
+                    message=f"Python syntax error: {error.msg}.",
                     file_path=rel_path,
+                    line=error.lineno,
+                    column=error.offset,
+                    hint="Fix the Python syntax error before rebuilding symbol memory.",
                 )
             )
             continue
@@ -80,15 +88,19 @@ def _detect_duplicate_ids(records: list[SymbolRecord]) -> list[ValidationIssue]:
             seen[record.id] = record
             continue
         issues.append(
-            ValidationIssue(
+            _issue(
+                stage="scan",
                 code="duplicate_symbol_id",
                 severity="error",
                 message=(
-                    f"Duplicate symbol id {record.id} found in "
-                    f"{existing.file_path} and {record.file_path}"
+                    f"Duplicate symbol id {record.id} is declared in "
+                    f"'{existing.file_path}' and '{record.file_path}'."
                 ),
                 symbol_id=record.id,
                 file_path=record.file_path,
+                line=record.start_line,
+                field="id",
+                hint="Choose a unique numeric id for one of the conflicting symbols.",
             )
         )
     return issues
@@ -158,11 +170,15 @@ class _ModuleScanner(ast.NodeVisitor):
             return
         if decorator_match.kind != "supported":
             self.issues.append(
-                ValidationIssue(
+                _issue(
+                    stage="scan",
                     code=decorator_match.code,
                     severity="error",
                     message=decorator_match.message,
                     file_path=self.relative_file_path,
+                    line=_line_from_node(decorator_match.node) or node.lineno,
+                    column=_column_from_node(decorator_match.node),
+                    hint=decorator_match.hint,
                 )
             )
             return
@@ -216,19 +232,24 @@ class _ModuleScanner(ast.NodeVisitor):
         if decorator_match.kind == "none":
             return
         message = (
-            f"Nested symbols are not supported in v1: {node.name} in "
-            f"{self.relative_file_path} at line {node.lineno}"
+            f"Nested symbols are not supported in v1: '{node.name}' cannot be indexed here."
         )
         code = "nested_symbol_not_supported"
+        hint = "Move the annotated symbol to module scope or to a top-level class method."
         if decorator_match.kind != "supported":
             message = decorator_match.message
             code = decorator_match.code
+            hint = decorator_match.hint
         self.issues.append(
-            ValidationIssue(
+            _issue(
+                stage="scan",
                 code=code,
                 severity="error",
                 message=message,
                 file_path=self.relative_file_path,
+                line=node.lineno,
+                column=_column_from_node(node),
+                hint=hint,
             )
         )
 
@@ -240,12 +261,16 @@ class _DecoratorMatch:
         kind: str,
         code: str = "",
         message: str = "",
+        hint: str | None = None,
         decorator: ast.Call | None = None,
+        node: ast.AST | None = None,
     ) -> None:
         self.kind = kind
         self.code = code
         self.message = message
+        self.hint = hint
         self.decorator = decorator
+        self.node = node
 
 
 def _find_symbol_decorator(
@@ -255,7 +280,7 @@ def _find_symbol_decorator(
     for decorator in decorators:
         if isinstance(decorator, ast.Call):
             if _is_supported_symbol_func(decorator.func):
-                return _DecoratorMatch(kind="supported", decorator=decorator)
+                return _DecoratorMatch(kind="supported", decorator=decorator, node=decorator)
             if isinstance(decorator.func, ast.Name) and decorator.func.id in symbol_aliases:
                 return _DecoratorMatch(
                     kind="unsupported_alias",
@@ -264,12 +289,16 @@ def _find_symbol_decorator(
                         f"Unsupported symbol decorator alias '{decorator.func.id}'. "
                         "Use @symbol(...) or @module.symbol(...)."
                     ),
+                    hint="Import the decorator as 'symbol' or call it through a module attribute.",
+                    node=decorator,
                 )
         elif _is_supported_symbol_func(decorator):
             return _DecoratorMatch(
                 kind="invalid_form",
                 code="invalid_symbol_decorator_form",
                 message="Invalid symbol decorator usage. Use @symbol(...).",
+                hint="Add parentheses and the required arguments, for example @symbol(7, r=[...], role='...', summary='...').",
+                node=decorator,
             )
         elif isinstance(decorator, ast.Name) and decorator.id in symbol_aliases:
             return _DecoratorMatch(
@@ -279,6 +308,8 @@ def _find_symbol_decorator(
                     f"Unsupported symbol decorator alias '{decorator.id}'. "
                     "Use @symbol(...) or @module.symbol(...)."
                 ),
+                hint="Import the decorator as 'symbol' or call it through a module attribute.",
+                node=decorator,
             )
     return _DecoratorMatch(kind="none")
 
@@ -308,118 +339,222 @@ def _parse_symbol_decorator(
     issues: list[ValidationIssue] = []
     if decorator is None:
         issues.append(
-            ValidationIssue(
+            _issue(
+                stage="parse",
                 code="invalid_symbol_decorator_form",
                 severity="error",
                 message="Invalid symbol decorator usage. Use @symbol(...).",
                 file_path=relative_file_path,
+                hint="Add parentheses and the required arguments.",
             )
         )
         return None, issues
 
-    if len(decorator.args) != 1:
+    id_value: int | None = None
+    if not decorator.args:
         issues.append(
-            ValidationIssue(
-                code="invalid_symbol_id_argument",
+            _issue(
+                stage="parse",
+                code="missing_symbol_id_argument",
                 severity="error",
-                message=(
-                    "Symbol decorator requires exactly one positional argument for the numeric id "
-                    f"in {relative_file_path} at line {decorator.lineno}"
-                ),
+                message="Symbol decorator requires a numeric id as the first positional argument.",
                 file_path=relative_file_path,
+                line=decorator.lineno,
+                column=_column_from_node(decorator),
+                field="id",
+                hint="Pass a single integer id as the first positional argument.",
             )
         )
-        return None, issues
-
-    try:
-        id_value = _literal_int(decorator.args[0])
-    except ValueError as error:
-        issues.append(
-            ValidationIssue(
-                code="invalid_symbol_id_argument",
-                severity="error",
-                message=f"{error} in {relative_file_path} at line {decorator.lineno}",
-                file_path=relative_file_path,
+    else:
+        if len(decorator.args) > 1:
+            issues.append(
+                _issue(
+                    stage="parse",
+                    code="too_many_symbol_arguments",
+                    severity="error",
+                    message="Symbol decorator accepts exactly one positional argument.",
+                    file_path=relative_file_path,
+                    line=decorator.lineno,
+                    column=_column_from_node(decorator),
+                    field="id",
+                    hint="Move all metadata except the id into keyword arguments.",
+                )
             )
-        )
-        return None, issues
+        try:
+            id_value = _literal_int(decorator.args[0])
+        except ValueError as error:
+            issues.append(
+                _issue(
+                    stage="parse",
+                    code="invalid_symbol_id_argument",
+                    severity="error",
+                    message=str(error),
+                    file_path=relative_file_path,
+                    line=_line_from_node(decorator.args[0]) or decorator.lineno,
+                    column=_column_from_node(decorator.args[0]),
+                    field="id",
+                    hint="Use an integer literal such as 7.",
+                )
+            )
 
-    kwargs: dict[str, object] = {}
+    kwargs: dict[str, ast.expr] = {}
     for keyword in decorator.keywords:
         if keyword.arg is None:
             issues.append(
-                ValidationIssue(
-                    code="invalid_symbol_keyword",
+                _issue(
+                    stage="parse",
+                    code="invalid_symbol_keyword_unpacking",
                     severity="error",
-                    message=(
-                        f"Keyword unpacking is not supported in symbol decorators "
-                        f"({relative_file_path}:{decorator.lineno})"
-                    ),
+                    message="Keyword unpacking is not supported in symbol decorators.",
                     file_path=relative_file_path,
+                    line=_line_from_node(keyword.value) or decorator.lineno,
+                    column=_column_from_node(keyword.value),
+                    hint="Write each supported keyword explicitly.",
                 )
             )
-            return None, issues
+            continue
         if keyword.arg in kwargs:
             issues.append(
-                ValidationIssue(
+                _issue(
+                    stage="parse",
                     code="duplicate_symbol_keyword",
                     severity="error",
-                    message=(
-                        f"Duplicate keyword '{keyword.arg}' in symbol decorator "
-                        f"({relative_file_path}:{decorator.lineno})"
-                    ),
+                    message=f"Duplicate symbol decorator keyword '{keyword.arg}'.",
                     file_path=relative_file_path,
+                    line=decorator.lineno,
+                    column=_column_from_node(keyword.value),
+                    field=keyword.arg,
+                    hint=f"Keep a single '{keyword.arg}=' entry in the decorator.",
                 )
             )
-            return None, issues
+            continue
         if keyword.arg not in SUPPORTED_KWARGS:
             issues.append(
-                ValidationIssue(
+                _issue(
+                    stage="parse",
                     code="unknown_symbol_keyword",
                     severity="error",
-                    message=(
-                        f"Unknown symbol decorator keyword '{keyword.arg}' "
-                        f"({relative_file_path}:{decorator.lineno})"
-                    ),
+                    message=f"Unknown symbol decorator keyword '{keyword.arg}'.",
                     file_path=relative_file_path,
+                    line=decorator.lineno,
+                    column=_column_from_node(keyword.value),
+                    field=keyword.arg,
+                    hint=f"Remove '{keyword.arg}' or replace it with one of: {', '.join(sorted(SUPPORTED_KWARGS))}.",
                 )
             )
-            return None, issues
+            continue
         kwargs[keyword.arg] = keyword.value
 
-    missing = [name for name in ("r", "role", "summary") if name not in kwargs]
-    if missing:
-        issues.append(
-            ValidationIssue(
-                code="missing_symbol_keyword",
-                severity="error",
-                message=(
-                    f"Missing required symbol decorator keyword(s) {', '.join(missing)} "
-                    f"({relative_file_path}:{decorator.lineno})"
-                ),
-                file_path=relative_file_path,
+    for field_name in ("r", "role", "summary"):
+        if field_name not in kwargs:
+            issues.append(
+                _issue(
+                    stage="parse",
+                    code="missing_symbol_keyword",
+                    severity="error",
+                    message=f"Missing required symbol decorator keyword '{field_name}'.",
+                    file_path=relative_file_path,
+                    line=decorator.lineno,
+                    column=_column_from_node(decorator),
+                    field=field_name,
+                    hint=f"Add '{field_name}=...' to the decorator.",
+                )
             )
-        )
+
+    parsed_values: dict[str, object] = {}
+    parsed_values["r"] = _parse_metadata_field(
+        issues,
+        relative_file_path=relative_file_path,
+        field_name="r",
+        node=kwargs.get("r"),
+        parser=_literal_int_list,
+        code="invalid_symbol_relations",
+        hint="Use a list of integer ids such as r=[] or r=[2, 4, 6].",
+    )
+    parsed_values["role"] = _parse_metadata_field(
+        issues,
+        relative_file_path=relative_file_path,
+        field_name="role",
+        node=kwargs.get("role"),
+        parser=_literal_string,
+        code="invalid_symbol_role",
+        hint="Use a non-empty string literal such as role='auth'.",
+    )
+    parsed_values["summary"] = _parse_metadata_field(
+        issues,
+        relative_file_path=relative_file_path,
+        field_name="summary",
+        node=kwargs.get("summary"),
+        parser=_literal_string,
+        code="invalid_symbol_summary",
+        hint="Use a non-empty string literal such as summary='Validates access token'.",
+    )
+    parsed_values["notes"] = _parse_metadata_field(
+        issues,
+        relative_file_path=relative_file_path,
+        field_name="notes",
+        node=kwargs.get("notes"),
+        parser=_literal_optional_string,
+        code="invalid_symbol_notes",
+        hint="Use a string literal or None for notes.",
+        default=None,
+    )
+    parsed_values["tags"] = _parse_metadata_field(
+        issues,
+        relative_file_path=relative_file_path,
+        field_name="tags",
+        node=kwargs.get("tags"),
+        parser=_literal_optional_string_list,
+        code="invalid_symbol_tags",
+        hint="Use a list of non-empty string literals or omit tags entirely.",
+        default=[],
+    )
+    parsed_values["expose"] = _parse_metadata_field(
+        issues,
+        relative_file_path=relative_file_path,
+        field_name="expose",
+        node=kwargs.get("expose"),
+        parser=_literal_bool,
+        code="invalid_symbol_expose",
+        hint="Use a boolean literal: expose=True or expose=False.",
+        default=True,
+    )
+    parsed_values["entrypoint"] = _parse_metadata_field(
+        issues,
+        relative_file_path=relative_file_path,
+        field_name="entrypoint",
+        node=kwargs.get("entrypoint"),
+        parser=_literal_bool,
+        code="invalid_symbol_entrypoint",
+        hint="Use a boolean literal: entrypoint=True or entrypoint=False.",
+        default=False,
+    )
+
+    if issues or id_value is None:
         return None, issues
 
     try:
         metadata = SymbolDecoratorMetadata(
             id=id_value,
-            r=_literal_int_list(kwargs["r"]),
-            role=_literal_string(kwargs["role"]),
-            summary=_literal_string(kwargs["summary"]),
-            notes=_literal_optional_string(kwargs.get("notes")),
-            tags=_literal_optional_string_list(kwargs.get("tags")) or [],
-            expose=_literal_bool(kwargs.get("expose", ast.Constant(value=True))),
-            entrypoint=_literal_bool(kwargs.get("entrypoint", ast.Constant(value=False))),
+            r=parsed_values["r"],
+            role=parsed_values["role"],
+            summary=parsed_values["summary"],
+            notes=parsed_values["notes"],
+            tags=parsed_values["tags"],
+            expose=parsed_values["expose"],
+            entrypoint=parsed_values["entrypoint"],
         )
-    except ValueError as error:
+    except ValidationError as error:
         issues.append(
-            ValidationIssue(
+            _issue(
+                stage="parse",
                 code="invalid_symbol_metadata",
                 severity="error",
-                message=f"{error} in {relative_file_path} at line {decorator.lineno}",
+                message=str(error),
                 file_path=relative_file_path,
+                line=decorator.lineno,
+                column=_column_from_node(decorator),
+                hint="Fix the decorator metadata so it matches the public symbol() contract.",
             )
         )
         return None, issues
@@ -427,34 +562,62 @@ def _parse_symbol_decorator(
     return metadata, issues
 
 
+def _parse_metadata_field(
+    issues: list[ValidationIssue],
+    *,
+    relative_file_path: str,
+    field_name: str,
+    node: ast.AST | None,
+    parser,
+    code: str,
+    hint: str,
+    default: object | None = None,
+) -> object | None:
+    if node is None:
+        return default
+    try:
+        value = parser(node)
+    except ValueError as error:
+        issues.append(
+            _issue(
+                stage="parse",
+                code=code,
+                severity="error",
+                message=str(error),
+                file_path=relative_file_path,
+                line=_line_from_node(node),
+                column=_column_from_node(node),
+                field=field_name,
+                hint=hint,
+            )
+        )
+        return default
+    return value if value is not None else default
+
+
 def _literal_int(node: ast.AST) -> int:
-    value = ast.literal_eval(node)
+    value = _literal_eval(node, "Symbol id must be an integer literal")
     if isinstance(value, bool) or not isinstance(value, int):
         raise ValueError("Symbol id must be an integer literal")
     return value
 
 
-def _literal_int_list(node: object) -> list[int]:
-    assert isinstance(node, ast.AST)
-    value = ast.literal_eval(node)
+def _literal_int_list(node: ast.AST) -> list[int]:
+    value = _literal_eval(node, "Symbol relations must be a list of integer literals")
     if not isinstance(value, list) or any(isinstance(item, bool) or not isinstance(item, int) for item in value):
         raise ValueError("Symbol relations must be a list of integer literals")
     return value
 
 
-def _literal_string(node: object) -> str:
-    assert isinstance(node, ast.AST)
-    value = ast.literal_eval(node)
+def _literal_string(node: ast.AST) -> str:
+    value = _literal_eval(node, "Symbol string fields must be non-empty string literals")
     if not isinstance(value, str) or not value.strip():
         raise ValueError("Symbol string fields must be non-empty string literals")
     return value
 
 
-def _literal_optional_string(node: object | None) -> str | None:
-    if node is None:
-        return None
-    assert isinstance(node, ast.AST)
-    value = ast.literal_eval(node)
+def _literal_optional_string(node: ast.AST) -> str | None:
+    value = _literal_eval(node, "Optional symbol string fields must be string literals or None")
     if value is None:
         return None
     if not isinstance(value, str) or not value.strip():
@@ -462,11 +625,8 @@ def _literal_optional_string(node: object | None) -> str | None:
     return value
 
 
-def _literal_optional_string_list(node: object | None) -> list[str] | None:
-    if node is None:
-        return None
-    assert isinstance(node, ast.AST)
-    value = ast.literal_eval(node)
+def _literal_optional_string_list(node: ast.AST) -> list[str] | None:
+    value = _literal_eval(node, "Symbol tags must be a list of non-empty string literals")
     if value is None:
         return None
     if not isinstance(value, list) or any(not isinstance(item, str) or not item.strip() for item in value):
@@ -474,12 +634,18 @@ def _literal_optional_string_list(node: object | None) -> list[str] | None:
     return value
 
 
-def _literal_bool(node: object) -> bool:
-    assert isinstance(node, ast.AST)
-    value = ast.literal_eval(node)
+def _literal_bool(node: ast.AST) -> bool:
+    value = _literal_eval(node, "Boolean symbol fields must be boolean literals")
     if not isinstance(value, bool):
         raise ValueError("Boolean symbol fields must be boolean literals")
     return value
+
+
+def _literal_eval(node: ast.AST, error_message: str) -> object:
+    try:
+        return ast.literal_eval(node)
+    except (ValueError, SyntaxError):
+        raise ValueError(error_message) from None
 
 
 def _module_path_for_file(project_root: Path, file_path: Path) -> str:
@@ -504,3 +670,43 @@ def _qualified_name(
         parts.extend(class_stack)
     parts.append(symbol_name)
     return ".".join(parts)
+
+
+def _issue(
+    *,
+    stage: str,
+    code: str,
+    severity: str,
+    message: str,
+    symbol_id: int | None = None,
+    file_path: str | None = None,
+    line: int | None = None,
+    column: int | None = None,
+    field: str | None = None,
+    hint: str | None = None,
+) -> ValidationIssue:
+    return ValidationIssue(
+        stage=stage,
+        code=code,
+        severity=severity,
+        message=message,
+        symbol_id=symbol_id,
+        file_path=file_path,
+        line=line,
+        column=column,
+        field=field,
+        hint=hint,
+    )
+
+
+def _line_from_node(node: ast.AST | None) -> int | None:
+    if node is None:
+        return None
+    return getattr(node, "lineno", None)
+
+
+def _column_from_node(node: ast.AST | None) -> int | None:
+    if node is None:
+        return None
+    column = getattr(node, "col_offset", None)
+    return None if column is None else column + 1

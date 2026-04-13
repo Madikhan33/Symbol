@@ -8,6 +8,7 @@ from symbol_memory.models import (
     SymbolRecord,
     ValidationIssue,
     ValidationReport,
+    ValidationStage,
 )
 from symbol_memory.query import SymbolMemory
 
@@ -19,5 +20,6 @@ __all__ = [
     "SymbolRecord",
     "ValidationIssue",
     "ValidationReport",
+    "ValidationStage",
     "symbol",
 ]
