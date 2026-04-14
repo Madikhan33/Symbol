@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/banner.svg" alt="Symbol Memory" width="100%">
+  <img src="https://raw.githubusercontent.com/Madikhan33/Symbol/main/assets/banner.svg" alt="Symbol Memory" width="100%">
 </p>
 
 # Symbol Memory

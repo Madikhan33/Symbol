@@ -28,6 +28,8 @@ symbol-memory = "symbol_memory.cli.main:main"
 
 [project.urls]
 Homepage = "https://github.com/Madikhan33/Symbol"
+Documentation = "https://github.com/Madikhan33/Symbol#readme"
+Issues = "https://github.com/Madikhan33/Symbol/issues"
 Repository = "https://github.com/Madikhan33/Symbol"
 
 [tool.setuptools]
