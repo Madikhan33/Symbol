@@ -7,6 +7,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from symbol_memory.core.ids import validate_symbol_id
+
 SymbolType = Literal["function", "method", "class"]
 ValidationSeverity = Literal["error", "warning"]
 ValidationStatus = Literal["ok", "warning", "error"]
@@ -18,8 +20,8 @@ class SymbolDecoratorMetadata(BaseModel):
 
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    id: int
-    r: list[int]
+    id: str
+    r: list[str]
     role: str
     summary: str
     notes: str | None = None
@@ -27,12 +29,15 @@ class SymbolDecoratorMetadata(BaseModel):
     expose: bool = True
     entrypoint: bool = False
 
+    @field_validator("id")
+    @classmethod
+    def _validate_id(cls, value: str) -> str:
+        return validate_symbol_id(value)
+
     @field_validator("r")
     @classmethod
-    def _validate_relation_ids(cls, value: list[int]) -> list[int]:
-        if any(isinstance(item, bool) or not isinstance(item, int) for item in value):
-            raise ValueError("Symbol relations must be a list of integer literals")
-        return value
+    def _validate_relation_ids(cls, value: list[str]) -> list[str]:
+        return [validate_symbol_id(item) for item in value]
 
     @field_validator("role", "summary")
     @classmethod
@@ -66,13 +71,13 @@ class SymbolRecord(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    id: int
+    id: str
     name: str
     qualified_name: str
     symbol_type: SymbolType
     role: str
     summary: str
-    relation_ids: list[int]
+    relation_ids: list[str]
     notes: str | None = None
     tags: list[str] = Field(default_factory=list)
     expose: bool = True
@@ -82,7 +87,29 @@ class SymbolRecord(BaseModel):
     end_line: int
     module_path: str
     parent_class_name: str | None = None
-    child_method_ids: list[int] = Field(default_factory=list)
+    child_method_ids: list[str] = Field(default_factory=list)
+    hierarchy_parent_id: str | None = None
+    hierarchy_child_ids: list[str] = Field(default_factory=list)
+
+    @field_validator("id")
+    @classmethod
+    def _validate_id(cls, value: str) -> str:
+        return validate_symbol_id(value)
+
+    @field_validator("relation_ids")
+    @classmethod
+    def _validate_relation_ids(cls, value: list[str]) -> list[str]:
+        return [validate_symbol_id(item) for item in value]
+
+    @field_validator("child_method_ids", "hierarchy_child_ids")
+    @classmethod
+    def _validate_child_ids(cls, value: list[str]) -> list[str]:
+        return [validate_symbol_id(item) for item in value]
+
+    @field_validator("hierarchy_parent_id")
+    @classmethod
+    def _validate_parent_id(cls, value: str | None) -> str | None:
+        return None if value is None else validate_symbol_id(value)
 
 
 class RelationPreview(BaseModel):
@@ -90,7 +117,7 @@ class RelationPreview(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    id: int
+    id: str
     resolved: bool
     name: str | None = None
     role: str | None = None
@@ -99,6 +126,11 @@ class RelationPreview(BaseModel):
     start_line: int | None = None
     end_line: int | None = None
     message: str | None = None
+
+    @field_validator("id")
+    @classmethod
+    def _validate_id(cls, value: str) -> str:
+        return validate_symbol_id(value)
 
 
 class ProjectCounts(BaseModel):
@@ -120,9 +152,9 @@ class ProjectIndex(BaseModel):
     project_root: str
     generated_at: str
     counts: ProjectCounts
-    symbols_by_id: dict[int, SymbolRecord]
-    name_lookup: dict[str, list[int]]
-    qualified_name_lookup: dict[str, list[int]]
+    symbols_by_id: dict[str, SymbolRecord]
+    name_lookup: dict[str, list[str]]
+    qualified_name_lookup: dict[str, list[str]]
 
 
 class ValidationIssue(BaseModel):
@@ -134,12 +166,17 @@ class ValidationIssue(BaseModel):
     code: str
     severity: ValidationSeverity
     message: str
-    symbol_id: int | None = None
+    symbol_id: str | None = None
     file_path: str | None = None
     line: int | None = None
     column: int | None = None
     field: str | None = None
     hint: str | None = None
+
+    @field_validator("symbol_id")
+    @classmethod
+    def _validate_symbol_id(cls, value: str | None) -> str | None:
+        return None if value is None else validate_symbol_id(value)
 
 
 class ValidationReport(BaseModel):

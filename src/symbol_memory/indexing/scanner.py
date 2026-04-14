@@ -8,7 +8,8 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
-from symbol_memory.models import SymbolDecoratorMetadata, SymbolRecord, ValidationIssue
+from symbol_memory.core.ids import validate_symbol_id
+from symbol_memory.core.models import SymbolDecoratorMetadata, SymbolRecord, ValidationIssue
 
 IGNORED_DIR_NAMES = {
     ".git",
@@ -80,7 +81,7 @@ def _iter_python_files(project_root: Path) -> Iterable[Path]:
 
 
 def _detect_duplicate_ids(records: list[SymbolRecord]) -> list[ValidationIssue]:
-    seen: dict[int, SymbolRecord] = {}
+    seen: dict[str, SymbolRecord] = {}
     issues: list[ValidationIssue] = []
     for record in records:
         existing = seen.get(record.id)
@@ -100,7 +101,7 @@ def _detect_duplicate_ids(records: list[SymbolRecord]) -> list[ValidationIssue]:
                 file_path=record.file_path,
                 line=record.start_line,
                 field="id",
-                hint="Choose a unique numeric id for one of the conflicting symbols.",
+                hint="Choose a unique string id for one of the conflicting symbols.",
             )
         )
     return issues
@@ -221,6 +222,8 @@ class _ModuleScanner(ast.NodeVisitor):
                 module_path=self.module_path,
                 parent_class_name=parent_class_name,
                 child_method_ids=[],
+                hierarchy_parent_id=None,
+                hierarchy_child_ids=[],
             )
         )
 
@@ -297,7 +300,7 @@ def _find_symbol_decorator(
                 kind="invalid_form",
                 code="invalid_symbol_decorator_form",
                 message="Invalid symbol decorator usage. Use @symbol(...).",
-                hint="Add parentheses and the required arguments, for example @symbol(7, r=[...], role='...', summary='...').",
+                hint="Add parentheses and the required arguments, for example @symbol('1', r=['2'], role='...', summary='...').",
                 node=decorator,
             )
         elif isinstance(decorator, ast.Name) and decorator.id in symbol_aliases:
@@ -350,19 +353,19 @@ def _parse_symbol_decorator(
         )
         return None, issues
 
-    id_value: int | None = None
+    id_value: str | None = None
     if not decorator.args:
         issues.append(
             _issue(
                 stage="parse",
                 code="missing_symbol_id_argument",
                 severity="error",
-                message="Symbol decorator requires a numeric id as the first positional argument.",
+                message="Symbol decorator requires a string id as the first positional argument.",
                 file_path=relative_file_path,
                 line=decorator.lineno,
                 column=_column_from_node(decorator),
                 field="id",
-                hint="Pass a single integer id as the first positional argument.",
+                hint="Pass a quoted id such as '1' or '1.2' as the first positional argument.",
             )
         )
     else:
@@ -381,7 +384,7 @@ def _parse_symbol_decorator(
                 )
             )
         try:
-            id_value = _literal_int(decorator.args[0])
+            id_value = _literal_symbol_id(decorator.args[0])
         except ValueError as error:
             issues.append(
                 _issue(
@@ -393,7 +396,7 @@ def _parse_symbol_decorator(
                     line=_line_from_node(decorator.args[0]) or decorator.lineno,
                     column=_column_from_node(decorator.args[0]),
                     field="id",
-                    hint="Use an integer literal such as 7.",
+                    hint="Use a quoted string id such as '1' or '1.2'.",
                 )
             )
 
@@ -467,9 +470,9 @@ def _parse_symbol_decorator(
         relative_file_path=relative_file_path,
         field_name="r",
         node=kwargs.get("r"),
-        parser=_literal_int_list,
+        parser=_literal_symbol_id_list,
         code="invalid_symbol_relations",
-        hint="Use a list of integer ids such as r=[] or r=[2, 4, 6].",
+        hint="Use a list of quoted ids such as r=[] or r=['2', '1.2'].",
     )
     parsed_values["role"] = _parse_metadata_field(
         issues,
@@ -595,18 +598,18 @@ def _parse_metadata_field(
     return value if value is not None else default
 
 
-def _literal_int(node: ast.AST) -> int:
-    value = _literal_eval(node, "Symbol id must be an integer literal")
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise ValueError("Symbol id must be an integer literal")
-    return value
+def _literal_symbol_id(node: ast.AST) -> str:
+    value = _literal_eval(node, "Symbol id must be a string literal like '1' or '1.2'")
+    if not isinstance(value, str):
+        raise ValueError("Symbol id must be a string literal like '1' or '1.2'")
+    return validate_symbol_id(value)
 
 
-def _literal_int_list(node: ast.AST) -> list[int]:
-    value = _literal_eval(node, "Symbol relations must be a list of integer literals")
-    if not isinstance(value, list) or any(isinstance(item, bool) or not isinstance(item, int) for item in value):
-        raise ValueError("Symbol relations must be a list of integer literals")
-    return value
+def _literal_symbol_id_list(node: ast.AST) -> list[str]:
+    value = _literal_eval(node, "Symbol relations must be a list of quoted string ids")
+    if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+        raise ValueError("Symbol relations must be a list of quoted string ids")
+    return [validate_symbol_id(item) for item in value]
 
 
 def _literal_string(node: ast.AST) -> str:
@@ -678,7 +681,7 @@ def _issue(
     code: str,
     severity: str,
     message: str,
-    symbol_id: int | None = None,
+    symbol_id: str | None = None,
     file_path: str | None = None,
     line: int | None = None,
     column: int | None = None,

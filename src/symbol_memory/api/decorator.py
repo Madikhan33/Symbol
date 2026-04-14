@@ -5,15 +5,15 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import TypeVar
 
-from symbol_memory.models import SymbolDecoratorMetadata
+from symbol_memory.core.models import SymbolDecoratorMetadata
 
 DecoratedObjectT = TypeVar("DecoratedObjectT")
 
 
 def symbol(
-    id: int,
+    id: str,
     *,
-    r: list[int],
+    r: list[str],
     role: str,
     summary: str,
     notes: str | None = None,

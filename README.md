@@ -48,7 +48,7 @@ If a symbol is not annotated, it does not exist for this system.
 <table>
 <tr>
   <td><b>Exact symbol graph</b></td>
-  <td>Map important functions, classes, and methods to numeric ids and manual relation ids.</td>
+  <td>Map important functions, classes, and methods to string ids and manual relation ids.</td>
 </tr>
 <tr>
   <td><b>AST-only scanning</b></td>
@@ -79,8 +79,8 @@ from symbol_memory import symbol
 
 
 @symbol(
-    7,
-    r=[2, 4, 6],
+    "1",
+    r=["2", "1.2"],
     role="auth",
     summary="Validates access token",
     notes="Critical auth path",
@@ -92,7 +92,7 @@ def validate_token(token: str) -> bool:
 
 ### Manual metadata
 
-- `id`: primary numeric symbol id
+- `id`: primary string symbol id such as `"1"` or `"1.2"`
 - `r`: manually declared relation ids
 - `role`: short human-written role
 - `summary`: short human-written summary
@@ -103,6 +103,7 @@ def validate_token(token: str) -> bool:
 
 ### Validation rules
 
+- symbol ids use numeric dot-separated string segments such as `"1"` or `"1.2.3"`
 - `r` is required, but `r=[]` is completely valid
 - `role` and `summary` must be non-empty string literals
 - `tags` may be omitted, `None`, or a list of non-empty strings
@@ -119,6 +120,8 @@ def validate_token(token: str) -> bool:
 - `end_line`
 - `parent_class_name`
 - `child_method_ids`
+- `hierarchy_parent_id`
+- `hierarchy_child_ids`
 
 ---
 
@@ -161,9 +164,13 @@ symbol-memory build path/to/project
 ```bash
 symbol-memory list --project-root path/to/project
 symbol-memory find auth --project-root path/to/project
-symbol-memory show 7 --project-root path/to/project
-symbol-memory relations 7 --project-root path/to/project
-symbol-memory open 7 --project-root path/to/project
+symbol-memory show 1 --project-root path/to/project
+symbol-memory relations 1 --project-root path/to/project
+symbol-memory branches 1 --project-root path/to/project
+symbol-memory children 1 --project-root path/to/project
+symbol-memory parent 1.2 --project-root path/to/project
+symbol-memory roots --project-root path/to/project
+symbol-memory open 1 --project-root path/to/project
 ```
 
 ### Validate after changes
@@ -185,9 +192,10 @@ report = memory.build()
 if report.status == "error":
     print(report.error_count)
 
-symbol = memory.get_symbol(7)
-relations = memory.show_relations(7)
-source = memory.open_symbol(7)
+symbol = memory.get_symbol("1")
+relations = memory.show_relations("1")
+branches = memory.list_branches("1")
+source = memory.open_symbol("1")
 ```
 
 Main API surface:
@@ -202,6 +210,10 @@ Main API surface:
 - `open_symbol()`
 - `open_file_range()`
 - `list_symbols()`
+- `list_children()`
+- `list_branches()`
+- `get_parent()`
+- `list_roots()`
 
 ---
 
@@ -214,6 +226,10 @@ Main API surface:
 | `symbol-memory find QUERY` | Lookup by id, exact name, qualified name, or substring |
 | `symbol-memory show ID` | Print the markdown symbol card |
 | `symbol-memory relations ID` | Show resolved relation previews |
+| `symbol-memory branches ID` | Print the full branch tree rooted at the given id |
+| `symbol-memory children ID` | Print direct children for the given id |
+| `symbol-memory parent ID` | Print the direct parent for the given id |
+| `symbol-memory roots` | Print all root-level symbols |
 | `symbol-memory open ID` | Print the source slice for a symbol |
 | `symbol-memory list` | List all indexed symbols sorted by id |
 
@@ -231,8 +247,8 @@ Running a build creates a `.symbol_memory/` directory inside the target project:
   project_map.md
   symbols/
     1.md
+    1.1.md
     2.md
-    7.md
 ```
 
 <table>
@@ -254,7 +270,7 @@ Running a build creates a `.symbol_memory/` directory inside the target project:
 </tr>
 <tr>
   <td><code>symbols/{id}.md</code></td>
-  <td>Markdown card for each indexed symbol.</td>
+  <td>Markdown card for each indexed symbol, including dotted ids such as <code>1.1.md</code>.</td>
 </tr>
 </table>
 
@@ -326,6 +342,8 @@ Supported in the current version:
 - top-level functions
 - top-level classes
 - class methods
+- string ids such as `"1"` and `"1.2"`
+- hierarchy inferred from dotted ids
 - `@symbol(...)`
 - `@module.symbol(...)`
 
@@ -366,6 +384,11 @@ codex/
 CLAUDE.md
 src/
   symbol_memory/
+    api/
+    artifacts/
+    cli/
+    core/
+    indexing/
 tests/
 dist/
 pyproject.toml

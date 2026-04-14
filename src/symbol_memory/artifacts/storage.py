@@ -1,158 +1,28 @@
-"""Storage, rendering, and artifact comparison helpers."""
+"""Storage, loading, and artifact comparison helpers."""
 
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
 from pathlib import Path
 
 from pydantic import TypeAdapter
 
-from symbol_memory.models import (
-    ProjectCounts,
-    ProjectIndex,
-    RelationPreview,
-    ValidationIssue,
-)
+from symbol_memory.core.ids import symbol_id_sort_key
+from symbol_memory.core.models import ProjectIndex, RelationPreview, ValidationIssue
 
-RELATION_MAP_ADAPTER = TypeAdapter(dict[int, list[RelationPreview]])
+RELATION_MAP_ADAPTER = TypeAdapter(dict[str, list[RelationPreview]])
 
 
 def default_output_dir(project_root: Path) -> Path:
     return project_root / ".symbol_memory"
 
 
-def build_project_index(project_root: Path, symbols_by_id: dict[int, "SymbolRecord"]) -> ProjectIndex:
-    from symbol_memory.models import SymbolRecord
-
-    counts = ProjectCounts(
-        total_indexed_symbols=len(symbols_by_id),
-        total_functions=sum(1 for symbol in symbols_by_id.values() if symbol.symbol_type == "function"),
-        total_methods=sum(1 for symbol in symbols_by_id.values() if symbol.symbol_type == "method"),
-        total_classes=sum(1 for symbol in symbols_by_id.values() if symbol.symbol_type == "class"),
-    )
-    name_lookup: dict[str, list[int]] = {}
-    qualified_name_lookup: dict[str, list[int]] = {}
-
-    for symbol in sorted(symbols_by_id.values(), key=lambda item: item.id):
-        name_lookup.setdefault(symbol.name, []).append(symbol.id)
-        qualified_name_lookup.setdefault(symbol.qualified_name, []).append(symbol.id)
-
-    return ProjectIndex(
-        project_root=str(project_root.resolve()),
-        generated_at=datetime.now(tz=UTC).isoformat(),
-        counts=counts,
-        symbols_by_id=dict(sorted(symbols_by_id.items())),
-        name_lookup=dict(sorted(name_lookup.items())),
-        qualified_name_lookup=dict(sorted(qualified_name_lookup.items())),
-    )
-
-
-def render_symbol_card(symbol: "SymbolRecord", relations: list[RelationPreview]) -> str:
-    lines = [
-        f"# Symbol {symbol.id}",
-        "",
-        "## Metadata",
-        f"- id: {symbol.id}",
-        f"- name: {symbol.name}",
-        f"- qualified_name: {symbol.qualified_name}",
-        f"- type: {symbol.symbol_type}",
-        f"- role: {symbol.role}",
-        f"- file_path: {symbol.file_path}",
-        f"- module_path: {symbol.module_path}",
-        f"- start_line: {symbol.start_line}",
-        f"- end_line: {symbol.end_line}",
-        f"- entrypoint: {str(symbol.entrypoint).lower()}",
-        f"- expose: {str(symbol.expose).lower()}",
-        "",
-        "## Summary",
-        symbol.summary,
-        "",
-        "## Relations",
-    ]
-
-    if relations:
-        for relation in relations:
-            if relation.resolved:
-                lines.append(
-                    f"- {relation.id} - {relation.name} - "
-                    f"{relation.file_path}:{relation.start_line}-{relation.end_line}"
-                )
-            else:
-                lines.append(f"- {relation.id} - unresolved")
-    else:
-        lines.append("- none")
-
-    lines.extend(
-        [
-            "",
-            "## Raw Relation IDs",
-            f"- {symbol.relation_ids}",
-        ]
-    )
-
-    if symbol.tags:
-        lines.extend(["", "## Tags"])
-        for tag in symbol.tags:
-            lines.append(f"- {tag}")
-
-    if symbol.notes:
-        lines.extend(["", "## Notes", symbol.notes])
-
-    if symbol.symbol_type == "class" and symbol.child_method_ids:
-        lines.extend(["", "## Children"])
-        for child_id in symbol.child_method_ids:
-            lines.append(f"- {child_id}")
-
-    if symbol.symbol_type == "method" and symbol.parent_class_name:
-        lines.extend(["", "## Parent Class", symbol.parent_class_name])
-
-    lines.append("")
-    return "\n".join(lines)
-
-
-def render_project_map(index: ProjectIndex) -> str:
-    top_level = [
-        symbol
-        for symbol in index.symbols_by_id.values()
-        if symbol.symbol_type in {"function", "class"}
-    ]
-    lines = [
-        "# Project Map",
-        "",
-        "## Overview",
-        f"- project_root: {index.project_root}",
-        f"- total_indexed_symbols: {index.counts.total_indexed_symbols}",
-        f"- total_functions: {index.counts.total_functions}",
-        f"- total_methods: {index.counts.total_methods}",
-        f"- total_classes: {index.counts.total_classes}",
-        "",
-        "## Output Layout",
-        "- .symbol_memory/index.json",
-        "- .symbol_memory/relations.json",
-        "- .symbol_memory/validation_report.json",
-        "- .symbol_memory/project_map.md",
-        "- .symbol_memory/symbols/{id}.md",
-        "",
-        "## Top-Level Annotated Symbols",
-    ]
-    if top_level:
-        for symbol in sorted(top_level, key=lambda item: item.id):
-            lines.append(
-                f"- {symbol.id} - {symbol.name} - {symbol.file_path}:{symbol.start_line}-{symbol.end_line}"
-            )
-    else:
-        lines.append("- none")
-    lines.append("")
-    return "\n".join(lines)
-
-
 def write_artifacts(
     output_dir: Path,
     index: ProjectIndex,
-    relations: dict[int, list[RelationPreview]],
+    relations: dict[str, list[RelationPreview]],
     report: "ValidationReport",
-    cards: dict[int, str],
+    cards: dict[str, str],
     project_map: str,
 ) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -180,15 +50,15 @@ def load_index(output_dir: Path) -> ProjectIndex:
     return ProjectIndex.model_validate_json((output_dir / "index.json").read_text(encoding="utf-8"))
 
 
-def load_relations(output_dir: Path) -> dict[int, list[RelationPreview]]:
+def load_relations(output_dir: Path) -> dict[str, list[RelationPreview]]:
     return RELATION_MAP_ADAPTER.validate_json((output_dir / "relations.json").read_text(encoding="utf-8"))
 
 
 def compare_artifacts(
     output_dir: Path,
     expected_index: ProjectIndex,
-    expected_relations: dict[int, list[RelationPreview]],
-    expected_cards: dict[int, str],
+    expected_relations: dict[str, list[RelationPreview]],
+    expected_cards: dict[str, str],
     expected_project_map: str,
 ) -> list[ValidationIssue]:
     issues: list[ValidationIssue] = []
@@ -253,7 +123,7 @@ def compare_artifacts(
 
     actual_ids = set(actual_index.symbols_by_id)
     expected_ids = set(expected_index.symbols_by_id)
-    for missing_id in sorted(expected_ids - actual_ids):
+    for missing_id in sorted(expected_ids - actual_ids, key=symbol_id_sort_key):
         issues.append(
             _artifact_issue(
                 code="missing_symbol_in_index",
@@ -263,7 +133,7 @@ def compare_artifacts(
                 hint="Run 'symbol-memory build' to regenerate index.json from source.",
             )
         )
-    for extra_id in sorted(actual_ids - expected_ids):
+    for extra_id in sorted(actual_ids - expected_ids, key=symbol_id_sort_key):
         issues.append(
             _artifact_issue(
                 code="unexpected_symbol_in_index",
@@ -274,7 +144,7 @@ def compare_artifacts(
             )
         )
 
-    for symbol_id in sorted(actual_ids & expected_ids):
+    for symbol_id in sorted(actual_ids & expected_ids, key=symbol_id_sort_key):
         actual_symbol = actual_index.symbols_by_id[symbol_id]
         expected_symbol = expected_index.symbols_by_id[symbol_id]
         if (
@@ -391,7 +261,7 @@ def _artifact_issue(
     *,
     code: str,
     message: str,
-    symbol_id: int | None = None,
+    symbol_id: str | None = None,
     file_path: str | None = None,
     line: int | None = None,
     hint: str | None = None,

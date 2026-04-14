@@ -4,19 +4,18 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from symbol_memory.models import ProjectIndex, RelationPreview, ValidationIssue, ValidationReport
-from symbol_memory.resolver import build_relation_map, link_child_methods
-from symbol_memory.scanner import scan_project
-from symbol_memory.storage import (
-    build_project_index,
+from symbol_memory.artifacts.renderer import build_project_index, render_project_map, render_symbol_card
+from symbol_memory.artifacts.storage import (
     compare_artifacts,
     default_output_dir,
     load_index,
     load_relations,
-    render_project_map,
-    render_symbol_card,
     write_artifacts,
 )
+from symbol_memory.core.ids import symbol_id_sort_key, validate_symbol_id
+from symbol_memory.core.models import ProjectIndex, RelationPreview, ValidationIssue, ValidationReport
+from symbol_memory.indexing.resolver import assign_hierarchy, build_relation_map, link_child_methods
+from symbol_memory.indexing.scanner import scan_project
 
 
 class SymbolMemory:
@@ -31,7 +30,7 @@ class SymbolMemory:
         else:
             self.output_dir = None
         self._index_cache: ProjectIndex | None = None
-        self._relations_cache: dict[int, list[RelationPreview]] | None = None
+        self._relations_cache: dict[str, list[RelationPreview]] | None = None
 
     def build(
         self,
@@ -89,13 +88,11 @@ class SymbolMemory:
         )
         return ValidationReport.from_issues(list(bundle["issues"]) + comparison_issues)
 
-    def find(self, query: int | str):
+    def find(self, query: str):
         index = self._load_index()
-        if isinstance(query, int):
-            return self.get_symbol(query)
         query_str = query.strip()
-        if query_str.isdigit():
-            return self.get_symbol(int(query_str))
+        if query_str in index.symbols_by_id:
+            return self.get_symbol(query_str)
 
         exact_ids = index.qualified_name_lookup.get(query_str) or index.name_lookup.get(query_str)
         if exact_ids:
@@ -107,31 +104,34 @@ class SymbolMemory:
             for symbol in index.symbols_by_id.values()
             if lowered in symbol.name.casefold() or lowered in symbol.qualified_name.casefold()
         ]
-        matches.sort(key=lambda symbol: symbol.id)
+        matches.sort(key=lambda symbol: symbol_id_sort_key(symbol.id))
         return matches[:20]
 
-    def get_symbol(self, symbol_id: int):
+    def get_symbol(self, symbol_id: str):
+        normalized_id = validate_symbol_id(symbol_id)
         index = self._load_index()
         try:
-            return index.symbols_by_id[symbol_id]
+            return index.symbols_by_id[normalized_id]
         except KeyError as error:
-            raise KeyError(f"Unknown symbol id {symbol_id}") from error
+            raise KeyError(f"Unknown symbol id {normalized_id}") from error
 
-    def get_symbol_card(self, symbol_id: int) -> str:
+    def get_symbol_card(self, symbol_id: str) -> str:
+        normalized_id = validate_symbol_id(symbol_id)
         output_dir = self._require_output_dir()
-        path = output_dir / "symbols" / f"{symbol_id}.md"
+        path = output_dir / "symbols" / f"{normalized_id}.md"
         if not path.exists():
-            raise KeyError(f"Unknown symbol card for id {symbol_id}")
+            raise KeyError(f"Unknown symbol card for id {normalized_id}")
         return path.read_text(encoding="utf-8")
 
-    def show_relations(self, symbol_id: int) -> list[RelationPreview]:
+    def show_relations(self, symbol_id: str) -> list[RelationPreview]:
+        normalized_id = validate_symbol_id(symbol_id)
         relations = self._load_relations()
         try:
-            return relations[symbol_id]
+            return relations[normalized_id]
         except KeyError as error:
-            raise KeyError(f"Unknown symbol id {symbol_id}") from error
+            raise KeyError(f"Unknown symbol id {normalized_id}") from error
 
-    def preview_relation(self, symbol_id: int) -> RelationPreview:
+    def preview_relation(self, symbol_id: str) -> RelationPreview:
         symbol = self.get_symbol(symbol_id)
         return RelationPreview(
             id=symbol.id,
@@ -144,7 +144,7 @@ class SymbolMemory:
             end_line=symbol.end_line,
         )
 
-    def open_symbol(self, symbol_id: int) -> str:
+    def open_symbol(self, symbol_id: str) -> str:
         symbol = self.get_symbol(symbol_id)
         return self.open_file_range(symbol.file_path, symbol.start_line, symbol.end_line)
 
@@ -162,7 +162,48 @@ class SymbolMemory:
 
     def list_symbols(self):
         index = self._load_index()
-        return [index.symbols_by_id[symbol_id] for symbol_id in sorted(index.symbols_by_id)]
+        return [index.symbols_by_id[symbol_id] for symbol_id in sorted(index.symbols_by_id, key=symbol_id_sort_key)]
+
+    def list_children(self, symbol_id: str):
+        symbol = self.get_symbol(symbol_id)
+        index = self._load_index()
+        return [
+            index.symbols_by_id[child_id]
+            for child_id in symbol.hierarchy_child_ids
+            if child_id in index.symbols_by_id
+        ]
+
+    def list_branches(self, symbol_id: str):
+        root = self.get_symbol(symbol_id)
+        index = self._load_index()
+        ordered: list = []
+        visited: set[str] = set()
+
+        def visit(current_id: str) -> None:
+            if current_id in visited:
+                return
+            visited.add(current_id)
+            symbol = index.symbols_by_id[current_id]
+            ordered.append(symbol)
+            for child_id in symbol.hierarchy_child_ids:
+                if child_id in index.symbols_by_id:
+                    visit(child_id)
+
+        visit(root.id)
+        return ordered
+
+    def get_parent(self, symbol_id: str):
+        symbol = self.get_symbol(symbol_id)
+        if symbol.hierarchy_parent_id is None:
+            return None
+        return self._load_index().symbols_by_id.get(symbol.hierarchy_parent_id)
+
+    def list_roots(self):
+        return [
+            symbol
+            for symbol in self.list_symbols()
+            if symbol.hierarchy_parent_id is None
+        ]
 
     def _compile_bundle(self, project_root: Path) -> dict[str, object]:
         records, issues = scan_project(project_root)
@@ -201,11 +242,12 @@ class SymbolMemory:
                 )
 
         link_child_methods(symbols_by_id)
+        assign_hierarchy(symbols_by_id, issues)
         relations = build_relation_map(symbols_by_id, issues)
-        index = build_project_index(project_root, symbols_by_id)
+        index = build_project_index(str(project_root.resolve()), symbols_by_id)
         cards = {
             symbol_id: render_symbol_card(symbol, relations.get(symbol_id, []))
-            for symbol_id, symbol in sorted(symbols_by_id.items())
+            for symbol_id, symbol in index.symbols_by_id.items()
         }
         project_map = render_project_map(index)
         return {
@@ -227,7 +269,7 @@ class SymbolMemory:
             self._index_cache = load_index(output_dir)
         return self._index_cache
 
-    def _load_relations(self) -> dict[int, list[RelationPreview]]:
+    def _load_relations(self) -> dict[str, list[RelationPreview]]:
         if self._relations_cache is None:
             output_dir = self._require_output_dir()
             relations_path = output_dir / "relations.json"

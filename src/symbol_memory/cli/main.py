@@ -3,13 +3,20 @@
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 
 from pydantic import ValidationError
 
-from symbol_memory.models import RelationPreview, SymbolRecord, ValidationReport
-from symbol_memory.query import SymbolMemory
+from symbol_memory.api.memory import SymbolMemory
+from symbol_memory.cli.formatting import (
+    format_branch_tree,
+    format_cli_error,
+    format_find_result,
+    format_parent,
+    format_relations,
+    format_report,
+    format_symbol_list,
+)
 
 try:  # pragma: no cover - import path depends on environment
     import typer
@@ -47,17 +54,17 @@ def _build_argparse_parser() -> argparse.ArgumentParser:
     find_parser.add_argument("--project-root", default=".")
 
     show_parser = subparsers.add_parser("show")
-    show_parser.add_argument("symbol_id", type=int)
+    show_parser.add_argument("symbol_id")
     show_parser.add_argument("--output", default=None)
     show_parser.add_argument("--project-root", default=".")
 
     relations_parser = subparsers.add_parser("relations")
-    relations_parser.add_argument("symbol_id", type=int)
+    relations_parser.add_argument("symbol_id")
     relations_parser.add_argument("--output", default=None)
     relations_parser.add_argument("--project-root", default=".")
 
     open_parser = subparsers.add_parser("open")
-    open_parser.add_argument("symbol_id", type=int)
+    open_parser.add_argument("symbol_id")
     open_parser.add_argument("--output", default=None)
     open_parser.add_argument("--project-root", default=".")
 
@@ -65,39 +72,69 @@ def _build_argparse_parser() -> argparse.ArgumentParser:
     list_parser.add_argument("--output", default=None)
     list_parser.add_argument("--project-root", default=".")
 
+    branches_parser = subparsers.add_parser("branches")
+    branches_parser.add_argument("symbol_id")
+    branches_parser.add_argument("--output", default=None)
+    branches_parser.add_argument("--project-root", default=".")
+
+    children_parser = subparsers.add_parser("children")
+    children_parser.add_argument("symbol_id")
+    children_parser.add_argument("--output", default=None)
+    children_parser.add_argument("--project-root", default=".")
+
+    parent_parser = subparsers.add_parser("parent")
+    parent_parser.add_argument("symbol_id")
+    parent_parser.add_argument("--output", default=None)
+    parent_parser.add_argument("--project-root", default=".")
+
+    roots_parser = subparsers.add_parser("roots")
+    roots_parser.add_argument("--output", default=None)
+    roots_parser.add_argument("--project-root", default=".")
+
     return parser
 
 
 def _dispatch_args(args: argparse.Namespace) -> int:
     if args.command == "build":
         report = SymbolMemory().build(args.project_root, args.output)
-        print(_format_report(report))
+        print(format_report(report))
         return 1 if report.status == "error" else 0
     if args.command == "validate":
         report = SymbolMemory().validate(args.project_root, args.output)
-        print(_format_report(report))
+        print(format_report(report))
         return 1 if report.status == "error" else 0
 
     memory = SymbolMemory(project_root=args.project_root, output_dir=args.output)
     try:
         if args.command == "find":
-            result = memory.find(args.query)
-            print(_format_find_result(result))
+            print(format_find_result(memory.find(args.query)))
             return 0
         if args.command == "show":
             print(memory.get_symbol_card(args.symbol_id))
             return 0
         if args.command == "relations":
-            print(_format_relations(memory.show_relations(args.symbol_id)))
+            print(format_relations(memory.show_relations(args.symbol_id)))
             return 0
         if args.command == "open":
             print(memory.open_symbol(args.symbol_id))
             return 0
         if args.command == "list":
-            print(_format_symbol_list(memory.list_symbols()))
+            print(format_symbol_list(memory.list_symbols()))
+            return 0
+        if args.command == "branches":
+            print(format_branch_tree(memory.list_branches(args.symbol_id)))
+            return 0
+        if args.command == "children":
+            print(format_symbol_list(memory.list_children(args.symbol_id)))
+            return 0
+        if args.command == "parent":
+            print(format_parent(memory.get_parent(args.symbol_id)))
+            return 0
+        if args.command == "roots":
+            print(format_symbol_list(memory.list_roots()))
             return 0
     except (FileNotFoundError, KeyError, OSError, UnicodeDecodeError, ValidationError, ValueError) as error:
-        print(_format_cli_error(error), file=sys.stderr)
+        print(format_cli_error(error), file=sys.stderr)
         return 1
     raise ValueError(f"Unknown command {args.command}")
 
@@ -108,41 +145,61 @@ def _run_typer(argv: list[str] | None = None) -> int:
     @app.command("build")
     def build_command(project_root: str = ".", output: str | None = None) -> None:
         report = SymbolMemory().build(project_root, output)
-        print(_format_report(report))
+        print(format_report(report))
         if report.status == "error":
             raise typer.Exit(code=1)
 
     @app.command("validate")
     def validate_command(project_root: str = ".", output: str | None = None) -> None:
         report = SymbolMemory().validate(project_root, output)
-        print(_format_report(report))
+        print(format_report(report))
         if report.status == "error":
             raise typer.Exit(code=1)
 
     @app.command("find")
     def find_command(query: str, output: str | None = None, project_root: str = ".") -> None:
         memory = SymbolMemory(project_root=project_root, output_dir=output)
-        _print_or_exit(lambda: _format_find_result(memory.find(query)))
+        _print_or_exit(lambda: format_find_result(memory.find(query)))
 
     @app.command("show")
-    def show_command(symbol_id: int, output: str | None = None, project_root: str = ".") -> None:
+    def show_command(symbol_id: str, output: str | None = None, project_root: str = ".") -> None:
         memory = SymbolMemory(project_root=project_root, output_dir=output)
         _print_or_exit(lambda: memory.get_symbol_card(symbol_id))
 
     @app.command("relations")
-    def relations_command(symbol_id: int, output: str | None = None, project_root: str = ".") -> None:
+    def relations_command(symbol_id: str, output: str | None = None, project_root: str = ".") -> None:
         memory = SymbolMemory(project_root=project_root, output_dir=output)
-        _print_or_exit(lambda: _format_relations(memory.show_relations(symbol_id)))
+        _print_or_exit(lambda: format_relations(memory.show_relations(symbol_id)))
 
     @app.command("open")
-    def open_command(symbol_id: int, output: str | None = None, project_root: str = ".") -> None:
+    def open_command(symbol_id: str, output: str | None = None, project_root: str = ".") -> None:
         memory = SymbolMemory(project_root=project_root, output_dir=output)
         _print_or_exit(lambda: memory.open_symbol(symbol_id))
 
     @app.command("list")
     def list_command(output: str | None = None, project_root: str = ".") -> None:
         memory = SymbolMemory(project_root=project_root, output_dir=output)
-        _print_or_exit(lambda: _format_symbol_list(memory.list_symbols()))
+        _print_or_exit(lambda: format_symbol_list(memory.list_symbols()))
+
+    @app.command("branches")
+    def branches_command(symbol_id: str, output: str | None = None, project_root: str = ".") -> None:
+        memory = SymbolMemory(project_root=project_root, output_dir=output)
+        _print_or_exit(lambda: format_branch_tree(memory.list_branches(symbol_id)))
+
+    @app.command("children")
+    def children_command(symbol_id: str, output: str | None = None, project_root: str = ".") -> None:
+        memory = SymbolMemory(project_root=project_root, output_dir=output)
+        _print_or_exit(lambda: format_symbol_list(memory.list_children(symbol_id)))
+
+    @app.command("parent")
+    def parent_command(symbol_id: str, output: str | None = None, project_root: str = ".") -> None:
+        memory = SymbolMemory(project_root=project_root, output_dir=output)
+        _print_or_exit(lambda: format_parent(memory.get_parent(symbol_id)))
+
+    @app.command("roots")
+    def roots_command(output: str | None = None, project_root: str = ".") -> None:
+        memory = SymbolMemory(project_root=project_root, output_dir=output)
+        _print_or_exit(lambda: format_symbol_list(memory.list_roots()))
 
     try:
         app(args=argv, standalone_mode=False)
@@ -155,72 +212,9 @@ def _run_typer(argv: list[str] | None = None) -> int:
     return 0
 
 
-def _format_report(report: ValidationReport) -> str:
-    lines = [
-        f"status: {report.status}",
-        f"errors: {report.error_count}",
-        f"warnings: {report.warning_count}",
-    ]
-    for issue in report.issues:
-        location = ""
-        if issue.file_path:
-            location = issue.file_path
-            if issue.line is not None:
-                location = f"{location}:{issue.line}"
-        prefix = f"{issue.severity} {issue.code}"
-        if issue.stage:
-            prefix = f"{prefix} [{issue.stage}]"
-        if location:
-            prefix = f"{prefix} {location}"
-        lines.append(f"{prefix} {issue.message}")
-        if issue.hint:
-            lines.append(f"hint: {issue.hint}")
-    return "\n".join(lines)
-
-
-def _format_find_result(result: SymbolRecord | list[SymbolRecord]) -> str:
-    if isinstance(result, SymbolRecord):
-        return json.dumps(result.model_dump(mode="json"), ensure_ascii=False, indent=2)
-    payload = [item.model_dump(mode="json") for item in result]
-    return json.dumps(payload, ensure_ascii=False, indent=2)
-
-
-def _format_relations(relations: list[RelationPreview]) -> str:
-    if not relations:
-        return "[]"
-    lines = []
-    for relation in relations:
-        if relation.resolved:
-            lines.append(
-                f"{relation.id} -> {relation.name} -> "
-                f"{relation.file_path}:{relation.start_line}-{relation.end_line}"
-            )
-        else:
-            lines.append(f"{relation.id} -> unresolved")
-    return "\n".join(lines)
-
-
-def _format_symbol_list(symbols: list[SymbolRecord]) -> str:
-    if not symbols:
-        return "[]"
-    lines = []
-    for symbol in symbols:
-        lines.append(f"{symbol.id} {symbol.symbol_type} {symbol.qualified_name}")
-    return "\n".join(lines)
-
-
 def _print_or_exit(render) -> None:
     try:
         print(render())
     except (FileNotFoundError, KeyError, OSError, UnicodeDecodeError, ValidationError, ValueError) as error:
-        print(_format_cli_error(error), file=sys.stderr)
+        print(format_cli_error(error), file=sys.stderr)
         raise typer.Exit(code=1) from error
-
-
-def _format_cli_error(error: Exception) -> str:
-    message = error.args[0] if getattr(error, "args", None) else str(error)
-    return f"error: {message}"
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
