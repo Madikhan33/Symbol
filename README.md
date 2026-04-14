@@ -11,6 +11,7 @@
 
 <p align="center">
   <a href="https://github.com/Madikhan33/Symbol"><img src="https://img.shields.io/badge/GitHub-Madikhan33%2FSymbol-111827?style=for-the-badge&logo=github" alt="GitHub"></a>
+  <a href="https://pypi.org/project/symbol-memory/"><img src="https://img.shields.io/pypi/v/symbol-memory?style=for-the-badge&logo=pypi&logoColor=white" alt="PyPI"></a>
   <a href="https://github.com/Madikhan33/Symbol/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-22C55E?style=for-the-badge" alt="License: MIT"></a>
   <img src="https://img.shields.io/badge/Python-3.12%2B-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python 3.12+">
   <img src="https://img.shields.io/badge/Built%20with-uv-6C47FF?style=for-the-badge" alt="Built with uv">
@@ -22,6 +23,14 @@ You annotate the symbols that matter, build once, and then query the project by 
 
 It is intentionally **not** a RAG system, **not** a semantic search layer, and **not** a code execution engine.  
 The model is simple: manual meaning, automatic structure, deterministic lookup.
+
+```bash
+uv add symbol-memory
+```
+
+```python
+from symbol_memory import SymbolMemory, symbol
+```
 
 ---
 
@@ -129,28 +138,26 @@ def validate_token(token: str) -> bool:
 
 ### Install
 
-From a local checkout:
-
-```bash
-uv add /path/to/Symbol
-```
-
-From a built wheel:
-
-```bash
-uv add ./dist/symbol_memory-0.1.0-py3-none-any.whl
-```
-
-From GitHub:
-
-```bash
-uv add git+https://github.com/Madikhan33/Symbol.git
-```
-
-After publishing to an index:
-
 ```bash
 uv add symbol-memory
+```
+
+The package name is `symbol-memory`, but the Python import is `symbol_memory`.
+
+### Annotate symbols
+
+```python
+from symbol_memory import symbol
+
+
+@symbol(
+    "1",
+    r=["2"],
+    role="auth",
+    summary="Validates access token",
+)
+def validate_token(token: str) -> bool:
+    return token == "ok"
 ```
 
 ### Build symbol memory
@@ -177,6 +184,15 @@ symbol-memory open 1 --project-root path/to/project
 
 ```bash
 symbol-memory validate path/to/project
+```
+
+### End-to-end example
+
+```bash
+uv add symbol-memory
+symbol-memory build path/to/project
+symbol-memory show 1 --project-root path/to/project
+symbol-memory relations 1 --project-root path/to/project
 ```
 
 ---
@@ -364,36 +380,8 @@ Not supported in v1:
 git clone https://github.com/Madikhan33/Symbol.git
 cd Symbol
 uv sync
-py -m unittest discover -s tests -v
+uv run --with pytest pytest
 uv build
-```
-
-Artifacts produced by `uv build`:
-
-- `dist/symbol_memory-0.1.0.tar.gz`
-- `dist/symbol_memory-0.1.0-py3-none-any.whl`
-
-Repository layout:
-
-```text
-assets/
-codex/
-  skills/
-    symbol-memory/
-      SKILL.md
-CLAUDE.md
-src/
-  symbol_memory/
-    api/
-    artifacts/
-    cli/
-    core/
-    indexing/
-tests/
-dist/
-pyproject.toml
-README.md
-LICENSE
 ```
 
 ---
